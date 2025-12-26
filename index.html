@@ -1,46 +1,54 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>RouteFlow</title>
-
-    <!-- Google Font -->
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-
-    <!-- Leaflet CSS -->
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/leaflet/dist/leaflet.css"
-    />
-
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-
-  <body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RouteFlow</title>
+  <!-- Google Font -->
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet/dist/leaflet.css"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
     <header class="navbar">
       <div class="logo">RouteFlow</div>
       <button id="themeToggle" class="theme-toggle">🌙</button>
     </header>
-
     <main class="hero">
       <h1>Create your route</h1>
-      <p>Choose your preferences and we’ll generate a running route for you.</p>
-
-      <label>
-  Location
-  <input type="text" id="location" placeholder="Enter suburb or city" />
-</label>
-
+      <p>Choose your preferences and we'll generate a running route for you.</p>
+      
       <form id="routeForm" class="route-form">
+<label>
+  Location
+  <input 
+    type="text" 
+    id="location" 
+    placeholder="e.g. 1 Park St, Sydney or just 'Mosman'" 
+    required
+  />
+</label>
+        
+        <label>
+          Route Type
+          <select id="routeType">
+            <option value="loop">Loop (return to start)</option>
+            <option value="pointToPoint">Point-to-Point</option>
+          </select>
+        </label>
+        
         <label>
           Distance (km)
           <input type="number" id="distance" min="1" max="50" value="5" />
         </label>
-
+        
         <label>
           Terrain
           <select id="terrain">
@@ -49,7 +57,7 @@
             <option value="mixed">Mixed</option>
           </select>
         </label>
-
+        
         <label>
           Elevation
           <select id="elevation">
@@ -58,43 +66,44 @@
             <option value="hilly">Hilly</option>
           </select>
         </label>
-
+        
         <label>
           Pace (min/km)
           <input type="number" id="pace" min="3" max="15" value="6" step="0.1"/>
         </label>
-
+        
         <button type="submit" class="primary-btn">Generate Route</button>
       </form>
-
+      
       <div id="result" class="result hidden"></div>
       <div id="map" class="map" style="height: 400px; margin-top: 20px;"></div>
     </main>
-
+    
     <section class="features">
       <div class="feature-card">
         <h3>Distance-based</h3>
         <p>Choose exactly how far you want to run.</p>
       </div>
-
       <div class="feature-card">
         <h3>Elevation-aware</h3>
         <p>Prefer flat routes or a challenge? Your call.</p>
       </div>
-
       <div class="feature-card">
         <h3>Terrain control</h3>
         <p>Road, trail, or a mix of both.</p>
       </div>
     </section>
-
+    
     <footer class="footer">
       <p>Built by you · RouteFlow</p>
     </footer>
+    
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <!-- Leaflet Polyline Decorator for arrows -->
+  <script src="https://unpkg.com/leaflet-polylinedecorator/dist/leaflet.polylineDecorator.js"></script>
+  <!-- App JS -->
+  <script src="app.js"></script>
+</body>
 
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-    <!-- App JS -->
-    <script src="app.js"></script>
-  </body>
 </html>
