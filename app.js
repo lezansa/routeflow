@@ -5,7 +5,7 @@ const result = document.getElementById("result");
 
 // IMPORTANT: You should not ship API keys in frontend for real products.
 // For demo/prototype only.
-const GRAPHHOPPER_API_KEY = "bd289842-f048-4989-a631-521d9405ff1d"; // <-- replace with your key
+const GRAPHHOPPER_API_KEY = "85a47dce-d196-4efa-9d9e-baea1b41b37d"; // <-- replace with your key
 
 // Central state (replaces window.* globals)
 const state = {
@@ -565,3 +565,4 @@ form?.addEventListener("submit", (e) => {
   e.preventDefault();
   handleSubmit();
 });
+
