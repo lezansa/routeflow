@@ -186,3 +186,12 @@ body.dark .route-form select {
   margin-top: 1rem;
 }
 
+.directions-panel ol {
+  padding-left: 2rem !important;
+  list-style-position: outside;
+}
+
+.directions-panel li {
+  margin-bottom: 0.7rem;
+  padding-left: 0.5rem;
+}
