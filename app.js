@@ -109,9 +109,9 @@ async function getRouteFromGraphHopper(points, profile = "foot") {
     GRAPHHOPPER_API_KEY
   )}`;
 
-  points.forEach(([lat, lon]) => {
-    url += `&point=${encodeURIComponent(`${lat},${lon}`)}`;
-  });
+url += `&points=${encodeURIComponent(
+  points.map(([lat, lon]) => `${lat},${lon}`).join("|")
+)}`;
 
   url += `&profile=${encodeURIComponent(profile)}&points_encoded=false&instructions=true`;
 
@@ -565,4 +565,3 @@ form?.addEventListener("submit", (e) => {
   e.preventDefault();
   handleSubmit();
 });
-
