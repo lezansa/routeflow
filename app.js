@@ -1,29 +1,31 @@
-/* ===== ROUTE FLOW APP (Real Routing with GraphHopper) ===== */
+/* ===== ROUTE FLOW APP (Routing via AWS Lambda Proxy) ===== */
+
 const toggleButton = document.getElementById("themeToggle");
 const form = document.getElementById("routeForm");
 const result = document.getElementById("result");
 
-// IMPORTANT: You should not ship API keys in frontend for real products.
-// For demo/prototype only.
-const GRAPHHOPPER_API_KEY = "85a47dce-d196-4efa-9d9e-baea1b41b37d"; // <-- replace with your key
+// ✅ Put your Lambda Function URL here (public is fine)
+const ROUTE_PROXY_URL = "https://kxwj3jmncesgk3koupy7mxdudq0xolyz.lambda-url.ap-southeast-2.on.aws/";
 
-// Central state (replaces window.* globals)
+// Central state (no window.* globals)
 const state = {
   routeLayer: null,
   startMarker: null,
   endMarker: null,
   arrowDecorator: null,
-  lastParams: null, // store last submit params so regen can re-run without reading DOM
+  startArrowMarker: null,
+  lastParams: null,
 };
 
-// THEME TOGGLE
+// ===== THEME TOGGLE =====
 toggleButton?.addEventListener("click", () => {
   document.body.classList.toggle("dark");
   toggleButton.textContent = document.body.classList.contains("dark") ? "☀️" : "🌙";
 });
 
-// INITIALIZE MAP
+// ===== MAP =====
 const map = L.map("map").setView([51.505, -0.09], 13);
+
 L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
   attribution:
     '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
@@ -31,38 +33,38 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
   maxZoom: 19,
 }).addTo(map);
 
-// HELPER: pick random item from array
+// ===== HELPERS =====
 const randomPick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-
-// HELPER: clamp number
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 
-// HELPER: Generate destination point at given distance and bearing
-function generateDestination(lat, lon, distanceKm, bearingDeg) {
-  const R = 6371; // Earth radius in km
-  const d = distanceKm;
-  const brng = (bearingDeg * Math.PI) / 180;
-  const lat1 = (lat * Math.PI) / 180;
-  const lon1 = (lon * Math.PI) / 180;
-
-  const lat2 = Math.asin(
-    Math.sin(lat1) * Math.cos(d / R) +
-      Math.cos(lat1) * Math.sin(d / R) * Math.cos(brng)
-  );
-  const lon2 =
-    lon1 +
-    Math.atan2(
-      Math.sin(brng) * Math.sin(d / R) * Math.cos(lat1),
-      Math.cos(d / R) - Math.sin(lat1) * Math.sin(lat2)
-    );
-
-  return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
+function toRad(d) {
+  return (d * Math.PI) / 180;
+}
+function toDeg(r) {
+  return (r * 180) / Math.PI;
 }
 
-// Simple in-memory geocode cache to reduce Nominatim spam
+function bearingBetween([lat1, lon1], [lat2, lon2]) {
+  const φ1 = toRad(lat1),
+    φ2 = toRad(lat2);
+  const Δλ = toRad(lon2 - lon1);
+
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  let θ = Math.atan2(y, x);
+  θ = (toDeg(θ) + 360) % 360;
+  return θ;
+}
+
+function cardinalFromBearing(deg) {
+  const dirs = ["North", "North-East", "East", "South-East", "South", "South-West", "West", "North-West"];
+  return dirs[Math.round(deg / 45) % 8];
+}
+
+// Geocode cache (saves Nominatim calls)
 const geocodeCache = new Map();
 
-// GEOCODE LOCATION INPUT USING Nominatim
+// ===== GEOCODE (Nominatim) =====
 async function geocodeLocation(location) {
   const query = location.trim();
   if (!query) return null;
@@ -70,22 +72,20 @@ async function geocodeLocation(location) {
   const key = query.toLowerCase();
   if (geocodeCache.has(key)) return geocodeCache.get(key);
 
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-    query
-  )}`;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
 
   try {
     const res = await fetch(url);
     const data = await res.json();
 
     if (data && data.length > 0) {
-      const resultObj = {
+      const obj = {
         lat: parseFloat(data[0].lat),
         lon: parseFloat(data[0].lon),
         displayName: data[0].display_name || query,
       };
-      geocodeCache.set(key, resultObj);
-      return resultObj;
+      geocodeCache.set(key, obj);
+      return obj;
     }
 
     alert("Location not found. Please try a different address or suburb.");
@@ -97,173 +97,187 @@ async function geocodeLocation(location) {
   }
 }
 
-// GET REAL ROUTE FROM GRAPHHOPPER
-async function getRouteFromGraphHopper(points, profile = "foot") {
-  if (!GRAPHHOPPER_API_KEY || GRAPHHOPPER_API_KEY === "xx") {
-    console.error("Missing GraphHopper API key");
+// ===== ROUTING VIA LAMBDA PROXY =====
+async function getRouteFromProxy(points, profile = "foot") {
+  if (!ROUTE_PROXY_URL || ROUTE_PROXY_URL.includes("PASTE_YOUR")) {
+    console.error("Missing ROUTE_PROXY_URL");
     return null;
   }
 
-  // Build URL with points
-  let url = `https://graphhopper.com/api/1/route?key=${encodeURIComponent(
-    GRAPHHOPPER_API_KEY
-  )}`;
+  const pointsParam = points.map(([lat, lon]) => `${lat},${lon}`).join("|");
 
-url += `&points=${encodeURIComponent(
-  points.map(([lat, lon]) => `${lat},${lon}`).join("|")
-)}`;
-
-  url += `&profile=${encodeURIComponent(profile)}&points_encoded=false&instructions=true`;
+  const url =
+    `${ROUTE_PROXY_URL}` +
+    `?profile=${encodeURIComponent(profile)}` +
+    `&points=${encodeURIComponent(pointsParam)}`;
 
   try {
     const res = await fetch(url);
 
     if (!res.ok) {
-      let errorData = null;
-      try {
-        errorData = await res.json();
-      } catch {}
-      console.error("GraphHopper error:", res.status, errorData);
-      throw new Error(`API error: ${res.status}`);
+      const text = await res.text();
+      console.error("Proxy error:", res.status, text);
+      return null;
     }
 
     const data = await res.json();
+    if (!data.paths || !data.paths.length) return null;
 
-    if (data.paths && data.paths.length > 0) {
-      const path = data.paths[0];
-      // GraphHopper returns coordinates as [lon, lat]
-      const leafletCoords = path.points.coordinates.map((coord) => [coord[1], coord[0]]);
-      return {
-        coordinates: leafletCoords,
-        distanceKm: path.distance / 1000,
-        durationSec: path.time / 1000,
-        instructions: path.instructions || [],
-      };
-    }
+    const path = data.paths[0];
 
-    return null;
+    // GraphHopper returns [lon, lat], Leaflet wants [lat, lon]
+    const leafletCoords = path.points.coordinates.map(([lon, lat]) => [lat, lon]);
+
+    return {
+      coordinates: leafletCoords,
+      distanceKm: path.distance / 1000,
+      durationSec: path.time / 1000,
+      instructions: path.instructions || [],
+    };
   } catch (err) {
-    console.error("Error fetching route:", err);
+    console.error("Route fetch failed:", err);
     return null;
   }
 }
 
-/**
- * Adaptive loop generator
- * - Uses 2 waypoints (+ return to start)
- * - Adjusts radius based on whether route is too short/too long
- * - Tightens acceptance over time
- */
+// ===== DESTINATION POINT (bearing + distance) =====
+function generateDestination(lat, lon, distanceKm, bearingDeg) {
+  const R = 6371; // km
+  const d = distanceKm;
+  const brng = (bearingDeg * Math.PI) / 180;
+  const lat1 = (lat * Math.PI) / 180;
+  const lon1 = (lon * Math.PI) / 180;
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(d / R) + Math.cos(lat1) * Math.sin(d / R) * Math.cos(brng)
+  );
+  const lon2 =
+    lon1 +
+    Math.atan2(
+      Math.sin(brng) * Math.sin(d / R) * Math.cos(lat1),
+      Math.cos(d / R) - Math.sin(lat1) * Math.sin(lat2)
+    );
+
+  return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
+}
+
+// ===== ROUTE SCORING (prefer fewer turns and avoid U-turns) =====
+function scoreRoute(route, targetKm) {
+  const distDiffRatio = Math.abs(route.distanceKm - targetKm) / targetKm;
+
+  const instr = route.instructions || [];
+  const turnCount = instr.filter((i) => {
+    const t = (i.text || "").toLowerCase();
+    return t.includes("turn") || t.includes("keep") || t.includes("u-turn");
+  }).length;
+
+  const uTurnCount = instr.filter((i) => (i.text || "").toLowerCase().includes("u-turn")).length;
+
+  // Tune weights to taste:
+  // Distance still matters most, but turns matter a lot, U-turns matter MORE.
+  return distDiffRatio * 120 + turnCount * 2.2 + uTurnCount * 12;
+}
+
+// ===== LOOP ROUTE (adaptive radius + tighter acceptance) =====
 async function generateLoopRoute(startLat, startLng, targetKm, terrain) {
   const profile = terrain === "trail" ? "hike" : "foot";
-
-  // If user asks for something silly, clamp a bit to reduce failures
   const target = clamp(targetKm, 1, 60);
 
-  // Initial radius heuristic: good starting point for road networks
-  // For 5km target, starts around ~1.6–2.0km (works better than tiny radii)
-  let radius = clamp(target * 0.35, 0.8, 8);
-
+  let radius = clamp(target * 0.35, 1.0, 10.0); // better baseline for dense cities
   const numWaypoints = 2;
   const maxAttempts = 10;
 
   let bestRoute = null;
-  let bestDiff = Infinity;
+  let bestScore = Infinity;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // Tighten acceptance: early attempts more forgiving, later attempts stricter
-    const acceptRatio = attempt < 3 ? 0.18 : attempt < 7 ? 0.12 : 0.08; // 18% -> 12% -> 8%
+    const acceptRatio = attempt < 3 ? 0.18 : attempt < 7 ? 0.12 : 0.08; // tighten over time
+    const maxTurns = attempt < 3 ? 18 : attempt < 7 ? 14 : 12;
 
-    // Randomize route shape each attempt
     const baseAngle = Math.random() * 360;
-    const jitter = 35; // degrees
+    const jitter = 20; // lower jitter reduces chaotic zigzags
 
     const waypoints = [[startLat, startLng]];
-    for (let i = 0; i < numWaypoints; i++) {
-      const bearing =
-        baseAngle + (360 / numWaypoints) * i + (Math.random() - 0.5) * jitter;
 
+    for (let i = 0; i < numWaypoints; i++) {
+      const bearing = baseAngle + (360 / numWaypoints) * i + (Math.random() - 0.5) * jitter;
       const [lat, lon] = generateDestination(startLat, startLng, radius, bearing);
       waypoints.push([lat, lon]);
     }
-    waypoints.push([startLat, startLng]);
 
-    const route = await getRouteFromGraphHopper(waypoints, profile);
+    waypoints.push([startLat, startLng]); // close loop
+
+    const route = await getRouteFromProxy(waypoints, profile);
     if (!route) continue;
 
-    const actual = route.distanceKm;
-    const diff = Math.abs(actual - target);
-
-    if (diff < bestDiff) {
-      bestDiff = diff;
+    const score = scoreRoute(route, target);
+    if (score < bestScore) {
+      bestScore = score;
       bestRoute = route;
     }
 
-    // If good enough, return it
-    if (diff / target <= acceptRatio) {
+    const diffRatio = Math.abs(route.distanceKm - target) / target;
+    const turnCount = (route.instructions || []).filter((i) => {
+      const t = (i.text || "").toLowerCase();
+      return t.includes("turn") || t.includes("keep") || t.includes("u-turn");
+    }).length;
+
+    // Accept only if distance is close AND turns are reasonable
+    if (diffRatio <= acceptRatio && turnCount <= maxTurns) {
       return route;
     }
 
-    // Adaptive radius update:
-    // - too short: increase radius
-    // - too long: decrease radius
-    // Use gentle step sizes to avoid oscillation
-    const tooShort = actual < target;
+    // Adaptive radius update based on whether route is too short/too long
+    const tooShort = route.distanceKm < target;
     const factor = tooShort ? 1.18 : 0.86;
 
-    // Additional damping based on how far off we are
-    const ratioOff = diff / target; // e.g. 0.25 = 25% off
-    const damp = clamp(1 - ratioOff * 0.4, 0.75, 1); // reduce changes if very off
-    radius = clamp(radius * (1 + (factor - 1) * damp), 0.5, 10);
+    const damp = clamp(1 - diffRatio * 0.4, 0.75, 1);
+    radius = clamp(radius * (1 + (factor - 1) * damp), 1.0, 10.0);
   }
 
   return bestRoute;
 }
 
-// GENERATE POINT-TO-POINT ROUTE (tries bearings/dist multipliers, picks closest)
+// ===== POINT-TO-POINT ROUTE (closest to target) =====
 async function generatePointToPointRoute(startLat, startLng, targetKm, terrain) {
   const profile = terrain === "trail" ? "hike" : "foot";
   const target = clamp(targetKm, 1, 60);
 
   let bestRoute = null;
-  let bestDiff = Infinity;
+  let bestScore = Infinity;
 
-  // Try a mix of bearings and distance multipliers to land near target
   const bearings = Array.from({ length: 12 }, (_, i) => i * 30);
   const multipliers = [0.7, 0.85, 1.0, 1.15, 1.3];
 
-  for (let b = 0; b < bearings.length; b++) {
-    for (let m = 0; m < multipliers.length; m++) {
-      const bearing = bearings[b] + (Math.random() - 0.5) * 10;
-      const guessKm = target * multipliers[m];
+  for (const b of bearings) {
+    for (const m of multipliers) {
+      const bearing = b + (Math.random() - 0.5) * 10;
+      const guessKm = target * m;
 
       const [endLat, endLng] = generateDestination(startLat, startLng, guessKm, bearing);
-
       const waypoints = [
         [startLat, startLng],
         [endLat, endLng],
       ];
 
-      const route = await getRouteFromGraphHopper(waypoints, profile);
+      const route = await getRouteFromProxy(waypoints, profile);
       if (!route) continue;
 
-      const diff = Math.abs(route.distanceKm - target);
-
-      if (diff < bestDiff) {
-        bestDiff = diff;
+      const score = scoreRoute(route, target);
+      if (score < bestScore) {
+        bestScore = score;
         bestRoute = route;
       }
 
-      if (diff / target <= 0.08) {
-        return route; // within 8%
-      }
+      const diffRatio = Math.abs(route.distanceKm - target) / target;
+      if (diffRatio <= 0.08) return route;
     }
   }
 
   return bestRoute;
 }
 
-// GENERATE ROUTE DESCRIPTION
+// ===== DESCRIPTION =====
 function generateRouteDescription(distance, terrain, elevation, isLoop) {
   const elevationOptions = {
     flat: [
@@ -290,33 +304,74 @@ function generateRouteDescription(distance, terrain, elevation, isLoop) {
   };
 
   const routeType = isLoop ? "loop" : "point-to-point route";
-
   return `This ${routeType} follows ${randomPick(terrainOptions[terrain])}, featuring ${randomPick(
     elevationOptions[elevation]
   )}.`;
 }
 
-// Clear map layers safely
+// ===== DIRECTIONS (concise) =====
+function makeStartInstruction(startName, coords) {
+  if (!coords || coords.length < 2) return `Start at ${startName}.`;
+
+  const brng = bearingBetween(coords[0], coords[1]);
+  const dir = cardinalFromBearing(brng);
+  return `Start at ${startName}. Head ${dir}.`;
+}
+
+function conciseInstructions(instructions, maxSteps = 8) {
+  const instr = instructions || [];
+
+  const isMajor = (inst) => {
+    const t = (inst.text || "").toLowerCase();
+    const d = inst.distance || 0;
+
+    if (t.includes("waypoint") || t.includes("arrive")) return false;
+    if (d < 90) return false; // drop tiny segments
+    if (t.includes("slight") && d < 220) return false;
+    if (t.includes("continue") && d < 320) return false;
+
+    return true;
+  };
+
+  return instr.filter(isMajor).slice(0, maxSteps);
+}
+
+// ===== MAP LAYERS =====
 function clearMapLayers() {
   if (state.routeLayer) map.removeLayer(state.routeLayer);
   if (state.startMarker) map.removeLayer(state.startMarker);
   if (state.endMarker) map.removeLayer(state.endMarker);
   if (state.arrowDecorator) map.removeLayer(state.arrowDecorator);
+  if (state.startArrowMarker) map.removeLayer(state.startArrowMarker);
 
   state.routeLayer = null;
   state.startMarker = null;
   state.endMarker = null;
   state.arrowDecorator = null;
+  state.startArrowMarker = null;
 }
 
-// SHOW RESULT + MAP
+function addStartDirectionArrow(coords) {
+  if (!coords || coords.length < 2) return null;
+
+  const brng = bearingBetween(coords[0], coords[1]);
+  const icon = L.divIcon({
+    className: "start-arrow",
+    html: `<div style="transform: rotate(${brng}deg); font-size: 28px; line-height: 28px;">➤</div>`,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+  });
+
+  return L.marker(coords[0], { icon }).addTo(map).bindPopup("Start this way →");
+}
+
+// ===== RENDER RESULT + MAP =====
 function showResult({ routeData, description, paceMinPerKm, start, isLoop }) {
   result.classList.remove("hidden");
 
   const actualDistance = routeData.distanceKm;
   const engineMinutes = Math.round(routeData.durationSec / 60);
 
-  // User pace estimate (min/km)
   const paceMinutes = actualDistance * paceMinPerKm;
   const paceHours = Math.floor(paceMinutes / 60);
   const paceMins = Math.round(paceMinutes % 60);
@@ -326,65 +381,42 @@ function showResult({ routeData, description, paceMinPerKm, start, isLoop }) {
   const engMins = engineMinutes % 60;
   const engineStr = engHours > 0 ? `${engHours}h ${engMins}m` : `${engMins}m`;
 
-  // Build turn-by-turn directions HTML
-  let directionsHTML = "";
-  if (routeData.instructions && routeData.instructions.length > 0) {
-    const meaningful = routeData.instructions.filter((inst) => {
-      const text = (inst.text || "").toLowerCase();
-      return (
-        !text.includes("waypoint") &&
-        !text.includes("arrive at destination") &&
-        (inst.distance || 0) > 15
-      );
-    });
+  const startLine = makeStartInstruction(start.displayName, routeData.coordinates);
+  const quickSteps = conciseInstructions(routeData.instructions, 8);
 
-    // Simple simplification: keep “continue”, street_name, or long segments
-    const simplified = [];
-    let buffer = null;
+  const quickDirectionsHTML = `
+    <div style="margin-top: 1rem; text-align: left;">
+      <h4 style="margin: 0 0 0.5rem;">Quick Directions</h4>
+      <p style="margin: 0 0 0.75rem;"><strong>${startLine}</strong></p>
+      <ol style="padding-left: 1.5rem; margin: 0;">
+        ${quickSteps
+          .map((s) => {
+            const d = s.distance || 0;
+            const distStr = d < 1000 ? `${Math.round(d)}m` : `${(d / 1000).toFixed(1)}km`;
+            return `<li style="margin-bottom: 0.5rem;"><strong>${s.text}</strong> <span style="color: var(--muted-text);">— ${distStr}</span></li>`;
+          })
+          .join("")}
+      </ol>
 
-    for (const inst of meaningful) {
-      const text = (inst.text || "").toLowerCase();
-      const keep = text.includes("continue") || inst.street_name || (inst.distance || 0) > 120;
+      <button class="primary-btn" id="toggleFullDirections" style="margin-top: 0.9rem; padding: 0.6rem 1.2rem; font-size: 0.9rem;">
+        Show Full Turn-by-Turn
+      </button>
 
-      if (keep) {
-        if (buffer) {
-          simplified.push(buffer);
-          buffer = null;
-        }
-        simplified.push(inst);
-      } else {
-        if (!buffer) buffer = { ...inst };
-        else buffer.distance = (buffer.distance || 0) + (inst.distance || 0);
-      }
-    }
-    if (buffer) simplified.push(buffer);
-
-    directionsHTML = `
-      <div class="directions-toggle" style="margin-top: 1rem;">
-        <button class="primary-btn" id="toggleDirections" style="padding: 0.6rem 1.2rem; font-size: 0.9rem;">
-          Show Directions (${simplified.length} steps)
-        </button>
-      </div>
-      <div id="directions-panel" class="directions-panel" style="display: none; margin-top: 1rem; max-height: 300px; overflow-y: auto; text-align: left;">
-        <h4 style="margin-top: 0;">Navigation (${simplified.length} main turns):</h4>
-        <ol style="padding-left: 2rem; margin: 0; list-style-position: outside;">
-          ${simplified
-            .map((instruction) => {
-              const d = instruction.distance || 0;
+      <div id="fullDirections" style="display:none; margin-top: 0.8rem;">
+        <h4 style="margin: 0 0 0.5rem;">Full Directions</h4>
+        <ol style="padding-left: 1.5rem; margin: 0;">
+          ${(routeData.instructions || [])
+            .filter((i) => !(i.text || "").toLowerCase().includes("waypoint"))
+            .map((i) => {
+              const d = i.distance || 0;
               const distStr = d < 1000 ? `${Math.round(d)}m` : `${(d / 1000).toFixed(1)}km`;
-
-              let text = instruction.text || "Continue";
-              if (instruction.street_name && !text.toLowerCase().includes(instruction.street_name.toLowerCase())) {
-                text += ` onto ${instruction.street_name}`;
-              }
-
-              return `<li style="margin-bottom: 0.7rem; padding-left: 0.5rem;"><strong>${text}</strong> <span style="color: var(--muted-text); font-size: 0.9rem;">— ${distStr}</span></li>`;
+              return `<li style="margin-bottom: 0.45rem;"><strong>${i.text}</strong> <span style="color: var(--muted-text);">— ${distStr}</span></li>`;
             })
             .join("")}
         </ol>
       </div>
-    `;
-  }
+    </div>
+  `;
 
   result.innerHTML = `
     <h3>Your Route</h3>
@@ -393,24 +425,22 @@ function showResult({ routeData, description, paceMinPerKm, start, isLoop }) {
     <p><strong>Distance:</strong> ${actualDistance.toFixed(2)} km</p>
     <p><strong>At your pace:</strong> ${paceStr}</p>
     <p><strong>Routing engine estimate:</strong> ${engineStr}</p>
-    ${directionsHTML}
+    ${quickDirectionsHTML}
     <button class="primary-btn" id="regenBtn" style="margin-top: 1rem;">Regenerate</button>
   `;
 
-  // Directions toggle
-  const toggleBtn = document.getElementById("toggleDirections");
-  if (toggleBtn) {
-    toggleBtn.addEventListener("click", () => {
-      const panel = document.getElementById("directions-panel");
-      if (!panel) return;
+  // Toggle full directions
+  document.getElementById("toggleFullDirections")?.addEventListener("click", () => {
+    const panel = document.getElementById("fullDirections");
+    const btn = document.getElementById("toggleFullDirections");
+    if (!panel || !btn) return;
 
-      const isHidden = panel.style.display === "none";
-      panel.style.display = isHidden ? "block" : "none";
-      toggleBtn.textContent = isHidden ? "Hide Turn-by-Turn Directions" : "Show Turn-by-Turn Directions";
-    });
-  }
+    const isHidden = panel.style.display === "none";
+    panel.style.display = isHidden ? "block" : "none";
+    btn.textContent = isHidden ? "Hide Full Turn-by-Turn" : "Show Full Turn-by-Turn";
+  });
 
-  // Draw route on map
+  // Draw on map
   clearMapLayers();
 
   state.routeLayer = L.polyline(routeData.coordinates, {
@@ -419,15 +449,15 @@ function showResult({ routeData, description, paceMinPerKm, start, isLoop }) {
     opacity: 0.85,
   }).addTo(map);
 
-  // Arrow decorator (guard if plugin not loaded)
+  // Decorator arrows (optional plugin)
   if (typeof L.polylineDecorator === "function" && L.Symbol?.arrowHead) {
     const arrowSymbol = {
       offset: "50%",
-      repeat: 100,
+      repeat: 180, // less confetti
       symbol: L.Symbol.arrowHead({
-        pixelSize: 12,
-        polygon: false,
-        pathOptions: { color: "#8BC34A", fillOpacity: 1, weight: 2 },
+        pixelSize: 14,
+        polygon: true,
+        pathOptions: { color: "#8BC34A", fillOpacity: 1, weight: 1 },
       }),
     };
 
@@ -436,7 +466,10 @@ function showResult({ routeData, description, paceMinPerKm, start, isLoop }) {
     }).addTo(map);
   }
 
-  // Markers
+  // Big start arrow marker (easier to read than tiny repeated arrows)
+  state.startArrowMarker = addStartDirectionArrow(routeData.coordinates);
+
+  // Start marker
   state.startMarker = L.circleMarker(routeData.coordinates[0], {
     color: "#4CAF50",
     fillColor: "#4CAF50",
@@ -446,6 +479,7 @@ function showResult({ routeData, description, paceMinPerKm, start, isLoop }) {
     .addTo(map)
     .bindPopup(isLoop ? "Start/Finish" : "Start");
 
+  // End marker for point-to-point only
   if (!isLoop) {
     const lastPoint = routeData.coordinates[routeData.coordinates.length - 1];
     state.endMarker = L.circleMarker(lastPoint, {
@@ -460,46 +494,41 @@ function showResult({ routeData, description, paceMinPerKm, start, isLoop }) {
 
   map.fitBounds(state.routeLayer.getBounds(), { padding: [50, 50] });
 
-  // Regen button: re-run with last parameters if possible
+  // Regen button
   document.getElementById("regenBtn")?.addEventListener("click", () => {
     if (state.lastParams) handleSubmit(state.lastParams);
     else handleSubmit();
   });
 }
 
-// Centralized submit handler
+// ===== SUBMIT HANDLER =====
 async function handleSubmit(forcedParams = null) {
-  // API key check
-  if (!GRAPHHOPPER_API_KEY || GRAPHHOPPER_API_KEY === "xx") {
+  if (!ROUTE_PROXY_URL || ROUTE_PROXY_URL.includes("PASTE_YOUR")) {
     result.classList.remove("hidden");
     result.innerHTML = `
-      <h3>⚠️ API Key Required</h3>
-      <p>To use real routing, you need a GraphHopper API key.</p>
-      <p style="font-size: 0.9rem; color: var(--muted-text);">
-        Put it into <code>GRAPHHOPPER_API_KEY</code> in <code>app.js</code>.
-      </p>
+      <h3>⚠️ Backend URL Missing</h3>
+      <p>You need to set <code>ROUTE_PROXY_URL</code> in <code>app.js</code> to your Lambda Function URL.</p>
     `;
     return;
   }
 
-  // Read inputs (unless forced)
   const locationEl = document.getElementById("location");
   const distanceEl = document.getElementById("distance");
   const terrainEl = document.getElementById("terrain");
   const elevationEl = document.getElementById("elevation");
   const paceEl = document.getElementById("pace");
-  const routeTypeEl = document.getElementById("routeType"); // make sure this exists in HTML
+  const routeTypeEl = document.getElementById("routeType"); // add in HTML
 
-  const params = forcedParams || {
-    locationInput: locationEl?.value || "",
-    distanceKm: parseFloat(distanceEl?.value),
-    terrain: terrainEl?.value || "road",
-    elevation: elevationEl?.value || "flat",
-    paceMinPerKm: parseFloat(paceEl?.value),
-    routeType: routeTypeEl?.value || "loop",
-  };
+  const params =
+    forcedParams || {
+      locationInput: locationEl?.value || "",
+      distanceKm: parseFloat(distanceEl?.value),
+      terrain: terrainEl?.value || "road",
+      elevation: elevationEl?.value || "flat",
+      paceMinPerKm: parseFloat(paceEl?.value),
+      routeType: routeTypeEl?.value || "loop",
+    };
 
-  // Store last params for regen
   state.lastParams = { ...params };
 
   if (!params.locationInput.trim()) {
@@ -516,21 +545,18 @@ async function handleSubmit(forcedParams = null) {
   result.classList.remove("hidden");
   result.innerHTML = `<p style="text-align:center;">🏃 Generating your route...</p>`;
 
-  // Geocode
-  const geocodeResult = await geocodeLocation(params.locationInput);
-  if (!geocodeResult) return;
+  const start = await geocodeLocation(params.locationInput);
+  if (!start) return;
 
-  // Center map
-  map.setView([geocodeResult.lat, geocodeResult.lon], 15);
+  map.setView([start.lat, start.lon], 15);
 
-  // Route generation
   const isLoop = params.routeType === "loop";
   let routeData = null;
 
   if (isLoop) {
-    routeData = await generateLoopRoute(geocodeResult.lat, geocodeResult.lon, params.distanceKm, params.terrain);
+    routeData = await generateLoopRoute(start.lat, start.lon, params.distanceKm, params.terrain);
   } else {
-    routeData = await generatePointToPointRoute(geocodeResult.lat, geocodeResult.lon, params.distanceKm, params.terrain);
+    routeData = await generatePointToPointRoute(start.lat, start.lon, params.distanceKm, params.terrain);
   }
 
   if (!routeData) {
@@ -540,7 +566,7 @@ async function handleSubmit(forcedParams = null) {
       <ul style="text-align:left; margin:1rem 0;">
         <li>No suitable roads/paths in this area</li>
         <li>Distance too large for the location</li>
-        <li>API rate limit reached</li>
+        <li>Backend timeout or rate limit</li>
       </ul>
       <p>Try a different location or distance. Check the browser console (F12) for details.</p>
       <button class="primary-btn" id="regenBtn">Try Again</button>
@@ -555,12 +581,12 @@ async function handleSubmit(forcedParams = null) {
     routeData,
     description,
     paceMinPerKm: params.paceMinPerKm,
-    start: geocodeResult,
+    start,
     isLoop,
   });
 }
 
-// FORM SUBMIT
+// ===== FORM SUBMIT =====
 form?.addEventListener("submit", (e) => {
   e.preventDefault();
   handleSubmit();
