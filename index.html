@@ -22,58 +22,34 @@
       <button id="themeToggle" class="theme-toggle">🌙</button>
     </header>
     <main class="hero">
-      <h1>Create your route</h1>
-      <p>Choose your preferences and we'll generate a running route for you.</p>
+<h1>Create your route</h1>
+<p>Choose your preferences and we'll generate a running route for you.</p>
+<p style="font-size: 0.9rem; color: var(--muted-text); margin-top: 0.5rem;">
+  💡 <strong>Tip:</strong> Works best with Australian suburbs or specific addresses (e.g., "Mosman" or "1 Park St, Sydney NSW"). 
+  Routes typically within 100-300m of target.
+</p>
       
-      <form id="routeForm" class="route-form">
-<label>
-  Location
-  <input 
-    type="text" 
-    id="location" 
-    placeholder="e.g. 1 Park St, Sydney or just 'Mosman'" 
-    required
-  />
-</label>
-        
-        <label>
-          Route Type
-          <select id="routeType">
-            <option value="loop">Loop (return to start)</option>
-            <option value="pointToPoint">Point-to-Point</option>
-          </select>
-        </label>
-        
-        <label>
-          Distance (km)
-          <input type="number" id="distance" min="1" max="50" value="5" />
-        </label>
-        
-        <label>
-          Terrain
-          <select id="terrain">
-            <option value="road">Road</option>
-            <option value="trail">Trail</option>
-            <option value="mixed">Mixed</option>
-          </select>
-        </label>
-        
-        <label>
-          Elevation
-          <select id="elevation">
-            <option value="flat">Flat</option>
-            <option value="rolling">Rolling</option>
-            <option value="hilly">Hilly</option>
-          </select>
-        </label>
-        
-        <label>
-          Pace (min/km)
-          <input type="number" id="pace" min="3" max="15" value="6" step="0.1"/>
-        </label>
-        
-        <button type="submit" class="primary-btn">Generate Route</button>
-      </form>
+<form id="routeForm" class="route-form">
+  <label>
+    Location
+    <input type="text" id="location" placeholder="e.g. 2 Park St, Sydney or Mosman" required />
+  </label>
+  
+  <label>
+    Route Type
+    <select id="routeType">
+      <option value="loop">Loop (return to start)</option>
+      <option value="pointToPoint">Point-to-Point</option>
+    </select>
+  </label>
+  
+  <label>
+    Distance (km)
+    <input type="number" id="distance" min="1" max="50" value="5" step="0.5" />
+  </label>
+  
+  <button type="submit" class="primary-btn">Generate Route</button>
+</form>
       
       <div id="result" class="result hidden"></div>
       <div id="map" class="map" style="height: 400px; margin-top: 20px;"></div>
