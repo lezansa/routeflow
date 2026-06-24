@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
-import { closestOnRoute, distanceRemaining, stepForIndex, haversine, fmtDist, turnIcon } from '../utils';
+import { closestOnRoute, distanceRemaining, stepForIndex, haversine, fmtDist, turnIcon } from './utils';
 
 export function useNavigation(mapRef) {
   const [active, setActive] = useState(false);

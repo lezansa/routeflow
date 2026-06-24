@@ -3,7 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-polylinedecorator';
 import NavPanel from './NavPanel';
-import { useNavigation } from './hooks/useNavigation';
+import { useNavigation } from './useNavigation';
 import { geocode, generateLoop, generateP2P, bearingBetween, cardinalFromBearing } from './utils';
 import './App.css';
 
