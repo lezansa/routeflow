@@ -67,6 +67,49 @@ function destination(lat, lon, km, bearing) {
   return [toDeg(φ2), toDeg(λ2)];
 }
 
+// ── Scenic scoring ────────────────────────────────────────────────────────────
+// Higher = nicer for running. Off-road foot/cycle paths (parks, foreshore
+// promenades, greenways) score top; arterials (Pacific Hwy = trunk/primary) bottom.
+const ROAD_CLASS_SCORE = {
+  path: 1, footway: 1, cycleway: 1, track: 0.95, pedestrian: 0.9,
+  living_street: 0.8, residential: 0.7, unclassified: 0.6, service: 0.5,
+  road: 0.5, tertiary: 0.45, steps: 0.25,
+  secondary: 0.2, primary: 0.1, trunk: 0.05, motorway: 0,
+};
+// Bonus only — never penalises paved (most waterfront promenades are sealed),
+// just nudges toward natural park-trail surfaces.
+const SURFACE_BONUS = {
+  gravel: 0.1, fine_gravel: 0.1, compacted: 0.08, ground: 0.08, dirt: 0.06, grass: 0.05,
+};
+
+// How strongly scenery competes with distance accuracy when picking a route.
+const SCENIC_WEIGHT = 0.2;
+
+// Returns 0..1 from GraphHopper path `details` (road_class + surface), weighted
+// by real segment length. Falls back to neutral 0.5 when details are absent.
+function scoreScenic(coords, details) {
+  if (!details?.road_class?.length) return 0.5;
+
+  const segLen = (a, b) => {
+    let d = 0;
+    for (let i = a; i < b && i + 1 < coords.length; i++) d += haversine(coords[i], coords[i + 1]);
+    return d;
+  };
+
+  let total = 0, classAcc = 0, surfAcc = 0;
+  for (const [s, e, cls] of details.road_class) {
+    const len = segLen(s, e);
+    total += len;
+    classAcc += len * (ROAD_CLASS_SCORE[cls] ?? 0.5);
+  }
+  if (total === 0) return 0.5;
+
+  for (const [s, e, sf] of details.surface || [])
+    surfAcc += segLen(s, e) * (SURFACE_BONUS[sf] ?? 0);
+
+  return clamp(classAcc / total + surfAcc / total, 0, 1);
+}
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 export async function geocode(query) {
@@ -82,18 +125,25 @@ export async function geocode(query) {
 }
 
 async function fetchRoute(waypoints) {
-  const ps = waypoints.map(([lat, lon]) => `${lat},${lon}`).join('|');
-  const res = await fetch(`${PROXY}?profile=foot&points=${encodeURIComponent(ps)}`);
-  if (res.status === 429) return { rateLimited: true };
-  if (!res.ok) return null;
-  const { paths } = await res.json();
-  if (!paths?.length) return null;
-  return {
-    coordinates:  paths[0].points.coordinates.map(([lon, lat]) => [lat, lon]),
-    distanceKm:   paths[0].distance / 1000,
-    durationSec:  paths[0].time / 1000,
-    instructions: paths[0].instructions || [],
-  };
+  try {
+    const ps = waypoints.map(([lat, lon]) => `${lat},${lon}`).join('|');
+    const res = await fetch(`${PROXY}?profile=foot&points=${encodeURIComponent(ps)}`);
+    if (res.status === 429) return { rateLimited: true };
+    if (!res.ok) return null;
+    const { paths } = await res.json();
+    if (!paths?.length) return null;
+    const p = paths[0];
+    const coordinates = p.points.coordinates.map(([lon, lat]) => [lat, lon]);
+    return {
+      coordinates,
+      distanceKm:   p.distance / 1000,
+      durationSec:  p.time / 1000,
+      instructions: p.instructions || [],
+      scenic:       scoreScenic(coordinates, p.details),
+    };
+  } catch {
+    return null;   // network/CORS failure → treat as no route so the UI shows the error state
+  }
 }
 
 // ── Route generation ──────────────────────────────────────────────────────────
@@ -101,7 +151,8 @@ async function fetchRoute(waypoints) {
 export async function generateLoop(lat, lng, targetKm) {
   const t = clamp(targetKm, 1, 50);
   const MAX = t <= 5 ? 5 : 8;
-  let best = null, bestDiff = Infinity;
+  const tol = t <= 5 ? 0.20 : 0.25;          // acceptable distance error
+  let best = null, bestCost = Infinity;
 
   for (let i = 0; i < MAX; i++) {
     const n = t <= 8 ? 2 : 3;
@@ -119,27 +170,32 @@ export async function generateLoop(lat, lng, targetKm) {
     if (route?.rateLimited) return null;
     if (!route || route.distanceKm > t * (t <= 5 ? 1.4 : 1.3)) { await delay(150); continue; }
 
-    const diff = Math.abs(route.distanceKm - t);
-    if (diff < bestDiff) { bestDiff = diff; best = route; }
-    if (diff / t <= (t <= 5 ? 0.12 : 0.15)) return route;
+    // Blend distance accuracy with scenery; lower cost wins.
+    const distErr = Math.abs(route.distanceKm - t) / t;
+    const cost = distErr + SCENIC_WEIGHT * (1 - route.scenic);
+    if (cost < bestCost) { bestCost = cost; best = route; }
+
+    // Stop early only when a route is both close to target *and* genuinely scenic.
+    if (distErr <= (t <= 5 ? 0.12 : 0.15) && route.scenic >= 0.75) return route;
     await delay(150);
   }
 
-  return best && bestDiff / t <= (targetKm <= 5 ? 0.20 : 0.25) ? best : null;
+  return best && Math.abs(best.distanceKm - t) / t <= tol ? best : null;
 }
 
 export async function generateP2P(lat, lng, targetKm) {
   const t = clamp(targetKm, 1, 50);
-  let best = null, bestDiff = Infinity;
+  let best = null, bestCost = Infinity;
 
   for (const b of [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330])
     for (const m of [0.8, 0.9, 1.0, 1.1, 1.2]) {
       const route = await fetchRoute([[lat, lng], destination(lat, lng, t * m, b)]);
       if (!route) continue;
-      const diff = Math.abs(route.distanceKm - t);
-      if (diff < bestDiff) { bestDiff = diff; best = route; }
-      if (diff / t < 0.15) return route;
+      const distErr = Math.abs(route.distanceKm - t) / t;
+      const cost = distErr + SCENIC_WEIGHT * (1 - route.scenic);
+      if (cost < bestCost) { bestCost = cost; best = route; }
+      if (distErr < 0.15 && route.scenic >= 0.75) return route;
     }
 
-  return best && bestDiff / t < 0.25 ? best : null;
+  return best && Math.abs(best.distanceKm - t) / t < 0.25 ? best : null;
 }
