@@ -1,6 +1,10 @@
-const PROXY = 'https://kxwj3jmncesgk3koupy7mxdudq0xolyz.lambda-url.ap-southeast-2.on.aws/';
+const PROXY = 'https://routeflow-proxy.lezansarraj.workers.dev/';
 const geocodeCache = new Map();
 const delay = ms => new Promise(r => setTimeout(r, ms));
+
+// Spacing between routing calls. GraphHopper's free tier meters by credits
+// (multi-waypoint requests cost more), so bursting trips the minutely limit.
+const REQ_DELAY = 350;
 
 // ── Geo math ─────────────────────────────────────────────────────────────────
 
@@ -167,8 +171,9 @@ export async function generateLoop(lat, lng, targetKm) {
     ];
 
     const route = await fetchRoute(wps);
-    if (route?.rateLimited) return null;
-    if (!route || route.distanceKm > t * (t <= 5 ? 1.4 : 1.3)) { await delay(150); continue; }
+    // Out of API quota: stop asking, but keep whatever we've already found.
+    if (route?.rateLimited) break;
+    if (!route || route.distanceKm > t * (t <= 5 ? 1.4 : 1.3)) { await delay(REQ_DELAY); continue; }
 
     // Blend distance accuracy with scenery; lower cost wins.
     const distErr = Math.abs(route.distanceKm - t) / t;
@@ -177,7 +182,7 @@ export async function generateLoop(lat, lng, targetKm) {
 
     // Stop early only when a route is both close to target *and* genuinely scenic.
     if (distErr <= (t <= 5 ? 0.12 : 0.15) && route.scenic >= 0.75) return route;
-    await delay(150);
+    await delay(REQ_DELAY);
   }
 
   return best && Math.abs(best.distanceKm - t) / t <= tol ? best : null;
@@ -187,14 +192,18 @@ export async function generateP2P(lat, lng, targetKm) {
   const t = clamp(targetKm, 1, 50);
   let best = null, bestCost = Infinity;
 
+  search:
   for (const b of [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330])
     for (const m of [0.8, 0.9, 1.0, 1.1, 1.2]) {
       const route = await fetchRoute([[lat, lng], destination(lat, lng, t * m, b)]);
+      // Out of API quota: stop asking, but keep whatever we've already found.
+      if (route?.rateLimited) break search;
       if (!route) continue;
       const distErr = Math.abs(route.distanceKm - t) / t;
       const cost = distErr + SCENIC_WEIGHT * (1 - route.scenic);
       if (cost < bestCost) { bestCost = cost; best = route; }
       if (distErr < 0.15 && route.scenic >= 0.75) return route;
+      await delay(REQ_DELAY);
     }
 
   return best && Math.abs(best.distanceKm - t) / t < 0.25 ? best : null;

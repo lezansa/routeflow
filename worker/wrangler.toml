@@ -1,0 +1,6 @@
+name = "routeflow-proxy"
+main = "index.js"
+compatibility_date = "2026-08-06"
+
+# GRAPHHOPPER_KEY is a secret, not a plain var — never commit it here.
+# Set it with:  wrangler secret put GRAPHHOPPER_KEY
