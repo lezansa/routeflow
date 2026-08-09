@@ -128,6 +128,25 @@ export async function geocode(query) {
   return result;
 }
 
+// Turn GPS coords into a readable place name for the location field.
+// Best-effort only — the caller falls back to a generic label.
+export async function reverseGeocode(lat, lon) {
+  try {
+    const d = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&zoom=14&lat=${lat}&lon=${lon}`
+    ).then(r => r.json());
+    const a = d?.address;
+    if (!a) return null;
+    const parts = [
+      a.suburb || a.neighbourhood || a.village || a.town || a.city_district,
+      a.city || a.state,
+    ].filter(Boolean);
+    return [...new Set(parts)].join(', ') || null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchRoute(waypoints) {
   try {
     const ps = waypoints.map(([lat, lon]) => `${lat},${lon}`).join('|');

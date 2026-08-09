@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet-polylinedecorator';
 import NavPanel from './NavPanel';
 import { useNavigation } from './useNavigation';
-import { geocode, generateLoop, generateP2P, bearingBetween, cardinalFromBearing } from './utils';
+import { geocode, reverseGeocode, generateLoop, generateP2P, bearingBetween, cardinalFromBearing } from './utils';
 import './App.css';
 
 export default function App() {
@@ -12,6 +12,9 @@ export default function App() {
   const [form, setForm]   = useState({ location: '', distance: '', type: 'loop' });
   const [phase, setPhase] = useState('idle'); // idle | loading | result | error
   const [route, setRoute] = useState(null);   // { data, start, targetKm, isLoop }
+  const [myLoc, setMyLoc]     = useState(null);  // { lat, lon, name } when started from GPS
+  const [locating, setLocating] = useState(false);
+  const [locError, setLocError] = useState('');
 
   const mapDivRef = useRef(null);
   const mapRef    = useRef(null);
@@ -79,13 +82,40 @@ export default function App() {
     map.fitBounds(line.getBounds(), { padding: [50, 50] });
   }
 
+  // ── Current location ────────────────────────────────────────────────────────
+  function useMyLocation() {
+    if (!navigator.geolocation) {
+      setLocError('Your browser does not support location.');
+      return;
+    }
+    setLocError('');
+    setLocating(true);
+
+    navigator.geolocation.getCurrentPosition(
+      async ({ coords: { latitude: lat, longitude: lon } }) => {
+        const name = (await reverseGeocode(lat, lon)) || 'Current location';
+        setMyLoc({ lat, lon, name });
+        setForm(f => ({ ...f, location: name }));
+        setLocating(false);
+      },
+      (err) => {
+        setLocating(false);
+        setLocError(err.code === 1
+          ? 'Location blocked. Allow location access, then try again.'
+          : "Couldn't get your location — try typing it instead.");
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+    );
+  }
+
   // ── Route generation ─────────────────────────────────────────────────────────
   async function handleSubmit(override = null) {
-    const p = override ?? { ...form, distance: parseFloat(form.distance) };
+    const p = override ?? { ...form, distance: parseFloat(form.distance), coords: myLoc };
     lastForm.current = p;
     setPhase('loading');
 
-    const start = await geocode(p.location).catch(() => null);
+    // Exact GPS coords win over geocoding the typed text.
+    const start = p.coords ?? await geocode(p.location).catch(() => null);
     if (!start) { setPhase('error'); return; }
 
     mapRef.current?.setView([start.lat, start.lon], 14);
@@ -137,13 +167,29 @@ export default function App() {
 
           {/* ── Form ── */}
           <form className="route-form" onSubmit={e => { e.preventDefault(); handleSubmit(); }}>
-            <input
-              className="field"
-              placeholder="Start location (e.g. Newtown, Sydney)"
-              value={form.location}
-              onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
-              required
-            />
+            <div className="row">
+              <input
+                className={`field${myLoc ? ' from-gps' : ''}`}
+                placeholder="Start location (e.g. Newtown, Sydney)"
+                value={form.location}
+                // Typing overrides the GPS fix, so drop the stored coords.
+                onChange={e => { setMyLoc(null); setLocError(''); setForm(f => ({ ...f, location: e.target.value })); }}
+                required
+              />
+              <button
+                type="button"
+                className="btn locate"
+                onClick={useMyLocation}
+                disabled={locating}
+                title="Start from my current location"
+                aria-label="Start from my current location"
+              >
+                {locating ? '⏳' : '📍'}
+              </button>
+            </div>
+
+            {myLoc && <p className="loc-note">📍 Starting from your location</p>}
+            {locError && <p className="loc-error">{locError}</p>}
             <div className="row">
               <input
                 className="field"

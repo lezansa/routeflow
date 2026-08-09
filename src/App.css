@@ -98,6 +98,25 @@ body { font-family: var(--font); background: var(--bg); color: var(--fg); }
 }
 .icon-btn:hover { background: var(--surface); }
 
+/* ── Current location ──────────────────────────────────────────────────────── */
+.row .field { min-width: 0; }   /* let inputs shrink beside the locate button */
+
+.btn.locate {
+  width: auto; flex: 0 0 auto;
+  padding: 0.65rem 0.85rem;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  color: var(--fg);
+  font-size: 1.05rem; line-height: 1.2;
+  transition: border-color 0.15s;
+}
+.btn.locate:hover:not(:disabled) { border-color: var(--accent); opacity: 1; }
+
+.field.from-gps { border-color: var(--accent); }
+
+.loc-note  { font-size: 0.75rem; color: var(--accent); }
+.loc-error { font-size: 0.75rem; color: #FF7043; }
+
 /* ── Result ────────────────────────────────────────────────────────────────── */
 .result { display: flex; flex-direction: column; gap: 0.55rem; }
 .result h3 { font-size: 1rem; font-weight: 600; }
